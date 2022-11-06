@@ -52,6 +52,7 @@ class ViT(nn.Module):
                 d_model=dim,
                 nhead=heads,
                 dim_feedforward=dim*4,
+                batch_first=True,
             ),
             num_layers=depth
         )
@@ -69,7 +70,7 @@ class ViT(nn.Module):
 
 def main(args):
     trainloader, testloader = get_data(args.batch_size)
-    model = ViT(256, args.depth, 8).to(device)
+    model = ViT(768, 12, 12).to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     criterion = nn.CrossEntropyLoss()
 
