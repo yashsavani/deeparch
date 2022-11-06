@@ -41,27 +41,35 @@ def get_data(batch_size=64):
     return trainloader, testloader
 
 
-class MLP(nn.Module):
+class ViT(nn.Module):
 
-    def __init__(self, input_size, hidden_size, output_size, num_hid):
-        super(MLP, self).__init__()
-        self.fcin = nn.Linear(input_size, hidden_size)
-        self.fcs = nn.ModuleList([
-            nn.Linear(hidden_size, hidden_size) for i in range(num_hid)
-        ])
-        self.fcout = nn.Linear(hidden_size, output_size)
+    def __init__(self, dim, depth, heads):
+        super(ViT, self).__init__()
+        self.to_patches = nn.Conv2d(3, dim, kernel_size=2, stride=2)
+        self.pos_embed = nn.Parameter(torch.randn(1, 256, dim))
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=dim,
+                nhead=heads,
+                dim_feedforward=dim*4,
+            ),
+            num_layers=depth
+        )
+        self.to_logits = nn.Linear(dim, 10)
 
     def forward(self, x):
-        x = self.fcin(x)
-        for i, fc in enumerate(self.fcs):
-            x = F.relu(fc(x)+x)
-        x = self.fcout(x)
+        x = self.to_patches(x)
+        x = x.flatten(2).transpose(1, 2)
+        x = x + self.pos_embed
+        x = self.transformer(x)
+        x = x.mean(dim=1)
+        x = self.to_logits(x)
         return x
 
 
 def main(args):
     trainloader, testloader = get_data(args.batch_size)
-    model = MLP(3072, args.hidden_size, 10, args.num_layers).to(device)
+    model = ViT(256, args.depth, 8).to(device)
     optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
     criterion = nn.CrossEntropyLoss()
 
@@ -93,17 +101,15 @@ def main(args):
             ],
             schedule=profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
             on_trace_ready=profiler.tensorboard_trace_handler(
-                './logs/mlp_'
-                f'hid-{args.num_layers}'
-                f'_bs-{args.batch_size}'
-                f'_hs-{args.hidden_size}'),
+                './logs/transformer'
+            ),
             profile_memory=True,
             record_shapes=True,
             with_stack=True,
         )
         prof.start()
         for i, (x, y) in enumerate(trainloader):
-            x = x.view(x.size(0), -1).to(device)
+            x = x.to(device)
             y = y.to(device)
             loss, acc = train_step(x, y)
             prof.step()
@@ -116,7 +122,7 @@ def main(args):
         test_loss = 0.
         test_acc = 0.
         for i, (x, y) in enumerate(testloader):
-            x = x.view(x.size(0), -1).to(device)
+            x = x.to(device)
             y = y.to(device)
             loss, acc = test_step(x, y)
             test_loss += loss
@@ -128,8 +134,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--num_layers', type=int, default=10)
-    parser.add_argument('--hidden_size', type=int, default=1024)
+    parser.add_argument('--depth', type=int, default=6)
 
     parser.add_argument('--scale', type=float, default=0.75)
     parser.add_argument('--reprob', type=float, default=0.25)
