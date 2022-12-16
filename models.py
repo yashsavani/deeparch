@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils import checkpoint
 
+
 class MLP(nn.Module):
 
     def __init__(self, input_size, hidden_size, output_size, num_hid):
@@ -21,6 +22,7 @@ class MLP(nn.Module):
             x = F.relu(fc(x))
         x = self.fcout(x)
         return x
+
 
 class ViT(nn.Module):
 
