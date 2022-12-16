@@ -2,6 +2,7 @@ import math
 from torch import nn
 import torch
 import torch.nn.functional as F
+from torch.utils import checkpoint
 
 class MLP(nn.Module):
 
@@ -120,17 +121,30 @@ class MlpMixer(nn.Module):
             embed_dim=512,
             mlp_ratio=(0.5, 4.0),
             drop_rate=0.,
+            grad_checkpointing=False,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
-        self.grad_checkpointing = False
+        self.grad_checkpointing = grad_checkpointing
 
         self.stem = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
-        self.blocks = nn.Sequential(*[
-            MixerBlock(embed_dim, 16, mlp_ratio, drop=drop_rate)
-            for _ in range(num_blocks)])
+        if self.grad_checkpointing:
+            chunk_size = int(math.sqrt(num_blocks))
+            num_chunks = num_blocks // chunk_size
+            leftover = num_blocks % chunk_size
+            self.blocks = nn.ModuleList([
+                nn.Sequential(
+                    *[MixerBlock(embed_dim, 16, mlp_ratio, drop=drop_rate) for _ in range(chunk_size)]
+                ) for _ in range(num_chunks)
+            ] + [nn.Sequential(
+                    *[MixerBlock(embed_dim, 16, mlp_ratio, drop=drop_rate) for _ in range(leftover)]
+            )])
+        else:
+            self.blocks = nn.ModuleList([
+                MixerBlock(embed_dim, 16, mlp_ratio, drop=drop_rate)
+                for _ in range(num_blocks)])
 
         self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.head = nn.Linear(embed_dim, self.num_classes)
@@ -138,7 +152,8 @@ class MlpMixer(nn.Module):
     def forward_features(self, x):
         x = self.stem(x)
         x = x.flatten(2).transpose(1, 2)
-        x = self.blocks(x)
+        for block in self.blocks:
+            x = checkpoint.checkpoint(block, x) if self.grad_checkpointing else block(x)
         x = self.norm(x)
         return x
 
