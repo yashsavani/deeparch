@@ -1,3 +1,4 @@
+import math
 from torch import nn
 import torch
 import torch.nn.functional as F
@@ -75,3 +76,74 @@ def ConvMixer(dim, depth, kernel_size=9, patch_size=7, n_classes=1000):
         nn.Flatten(),
         nn.Linear(dim, n_classes)
     )
+
+
+def Mlp(in_features, hidden_features=None, out_features=None, drop=0.):
+    out_features = out_features or in_features
+    hidden_features = hidden_features or in_features
+    return nn.Sequential(
+        nn.Linear(in_features, hidden_features),
+        nn.GELU(),
+        nn.Dropout(drop),
+        nn.Linear(hidden_features, out_features),
+        nn.Dropout(drop)
+    )
+
+
+class MixerBlock(nn.Module):
+    """ Residual Block w/ token mixing and channel MLPs
+    Based on: 'MLP-Mixer: An all-MLP Architecture for Vision' - https://arxiv.org/abs/2105.01601
+    """
+
+    def __init__(self, dim, seq_len, mlp_ratio=(0.5, 4.0), drop=0.):
+        super().__init__()
+        tokens_dim, channels_dim = int(dim*mlp_ratio[0]), int(dim * mlp_ratio[1])
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
+        self.mlp_tokens = Mlp(seq_len, tokens_dim, drop=drop)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
+        self.mlp_channels = Mlp(dim, channels_dim, drop=drop)
+
+    def forward(self, x):
+        x = x + self.mlp_tokens(self.norm1(x).transpose(1, 2)).transpose(1, 2)
+        x = x + self.mlp_channels(self.norm2(x))
+        return x
+
+
+class MlpMixer(nn.Module):
+
+    def __init__(
+            self,
+            num_classes=1000,
+            in_chans=3,
+            patch_size=16,
+            num_blocks=8,
+            embed_dim=512,
+            mlp_ratio=(0.5, 4.0),
+            drop_rate=0.,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.grad_checkpointing = False
+
+        self.stem = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+        self.blocks = nn.Sequential(*[
+            MixerBlock(embed_dim, 16, mlp_ratio, drop=drop_rate)
+            for _ in range(num_blocks)])
+
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.head = nn.Linear(embed_dim, self.num_classes)
+
+    def forward_features(self, x):
+        x = self.stem(x)
+        x = x.flatten(2).transpose(1, 2)
+        x = self.blocks(x)
+        x = self.norm(x)
+        return x
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = x.mean(dim=1)
+        x = self.head(x)
+        return x
